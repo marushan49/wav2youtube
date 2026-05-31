@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-WAV2YouTube — Normalize a WAV file and upload to YouTube as MP4.
-Compiles to standalone .exe via PyInstaller.
+WAV2YouTube — Drop a WAV, get it on YouTube. That's it.
 """
 
 import sys
@@ -12,52 +11,53 @@ import pickle
 import argparse
 from pathlib import Path
 
-def get_config_dir():
-    """Config dir for tokens."""
+
+def config_dir():
     d = Path.home() / ".wav2youtube"
     d.mkdir(exist_ok=True)
     return d
 
+
 def check_ffmpeg():
-    """Ensure ffmpeg is available."""
     try:
         subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
     except (FileNotFoundError, subprocess.CalledProcessError):
-        print("❌ ffmpeg not found! Install from https://ffmpeg.org/download.html")
-        print("   Make sure ffmpeg.exe is in your PATH.")
+        print("❌ ffmpeg not found!")
+        print("   Download: https://ffmpeg.org/download.html")
+        print("   Make sure it's in your PATH.")
         sys.exit(1)
 
+
 def normalize_audio(input_wav, output_wav):
-    """Normalize WAV to -14 LUFS (YouTube standard) using ffmpeg loudnorm."""
-    print("🔊 Analyzing loudness...")
-    
-    # First pass: measure
-    cmd_measure = [
-        "ffmpeg", "-hide_banner", "-i", input_wav,
-        "-af", "loudnorm=I=-14:LRA=7:TP=-1:print_format=json",
-        "-f", "null", "-"
-    ]
-    result = subprocess.run(cmd_measure, capture_output=True, text=True)
-    stderr = result.stderr
-    
-    # Parse loudnorm stats from stderr
+    """Two-pass EBU R128 normalization to -14 LUFS."""
     import json
-    json_start = stderr.rfind("{")
-    json_end = stderr.rfind("}") + 1
+
+    print("\n  🔊 Normalizing audio...")
+
+    # Pass 1: Measure
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", input_wav,
+         "-af", "loudnorm=I=-14:LRA=7:TP=-1:print_format=json",
+         "-f", "null", "-"],
+        capture_output=True, text=True
+    )
+
+    json_start = result.stderr.rfind("{")
+    json_end = result.stderr.rfind("}") + 1
+
     if json_start == -1:
-        print("⚠️  Could not parse loudness stats, using single-pass normalization")
-        cmd_single = [
-            "ffmpeg", "-y", "-hide_banner", "-i", input_wav,
-            "-af", "loudnorm=I=-14:LRA=7:TP=-1",
-            "-ar", "48000", output_wav
-        ]
-        subprocess.run(cmd_single, check=True, capture_output=True)
+        # Fallback: single-pass
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-i", input_wav,
+             "-af", "loudnorm=I=-14:LRA=7:TP=-1",
+             "-ar", "48000", output_wav],
+            check=True, capture_output=True
+        )
         return
 
-    stats = json.loads(stderr[json_start:json_end])
-    
-    # Second pass: apply
-    print("🔊 Normalizing to -14 LUFS...")
+    stats = json.loads(result.stderr[json_start:json_end])
+
+    # Pass 2: Apply
     af = (
         f"loudnorm=I=-14:LRA=7:TP=-1:"
         f"measured_I={stats['input_i']}:"
@@ -67,48 +67,47 @@ def normalize_audio(input_wav, output_wav):
         f"offset={stats['target_offset']}:"
         f"linear=true"
     )
-    cmd_apply = [
-        "ffmpeg", "-y", "-hide_banner", "-i", input_wav,
-        "-af", af, "-ar", "48000", output_wav
-    ]
-    subprocess.run(cmd_apply, check=True, capture_output=True)
-    print("✅ Normalized!")
+    subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-i", input_wav,
+         "-af", af, "-ar", "48000", output_wav],
+        check=True, capture_output=True
+    )
+    print("  ✅ Done")
+
 
 def create_mp4(audio_path, output_mp4):
-    """Create MP4 with black screen + audio."""
-    print("🎬 Creating MP4...")
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner",
-        "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=1",
-        "-i", audio_path,
-        "-c:v", "libx264", "-tune", "stillimage", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
-        "-shortest",
-        output_mp4
-    ]
-    subprocess.run(cmd, check=True, capture_output=True)
-    print("✅ MP4 created!")
+    """Black 1080p video + AAC 320k audio."""
+    print("  🎬 Creating video...")
+    subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner",
+         "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=1",
+         "-i", audio_path,
+         "-c:v", "libx264", "-tune", "stillimage", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
+         "-shortest", output_mp4],
+        check=True, capture_output=True
+    )
+    print("  ✅ Done")
 
-def get_youtube_credentials():
-    """Get or refresh YouTube OAuth2 credentials."""
+
+def get_credentials():
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
 
     SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-    config_dir = get_config_dir()
-    token_file = config_dir / "token.pickle"
-    client_secret = config_dir / "client_secret.json"
+    token_file = config_dir() / "token.pickle"
+    client_secret = config_dir() / "client_secret.json"
 
     if not client_secret.exists():
-        print(f"❌ OAuth client secret not found!")
-        print(f"   Place your client_secret.json in: {client_secret}")
+        print("\n  ⚙️  One-time setup needed!")
+        print(f"  Place client_secret.json in: {config_dir()}")
         print()
-        print("   To get one:")
-        print("   1. Go to https://console.cloud.google.com/apis/credentials")
-        print("   2. Create OAuth 2.0 Client ID (Desktop App)")
-        print("   3. Download JSON → rename to client_secret.json")
-        print("   4. Enable 'YouTube Data API v3' in your project")
+        print("  How to get it (takes 2 min):")
+        print("  1. https://console.cloud.google.com → Create project")
+        print("  2. Enable 'YouTube Data API v3'")
+        print("  3. Credentials → OAuth 2.0 → Desktop App")
+        print("  4. Download JSON → rename to client_secret.json")
         sys.exit(1)
 
     creds = None
@@ -118,34 +117,29 @@ def get_youtube_credentials():
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            print("🔄 Refreshing token...")
             creds.refresh(Request())
         else:
-            print("🔑 First-time login — YouTube authorization required...")
+            print("\n  🔑 Opening browser for YouTube login...")
             flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), SCOPES)
-            try:
-                creds = flow.run_local_server(port=8090, prompt="consent", open_browser=False)
-            except Exception:
-                creds = flow.run_console()
+            creds = flow.run_local_server(port=8090, prompt="consent")
         with open(token_file, "wb") as f:
             pickle.dump(creds, f)
-        print("✅ Authenticated!")
 
     return creds
 
-def upload_to_youtube(mp4_path, title, description, privacy="public"):
-    """Upload MP4 to YouTube."""
+
+def upload(mp4_path, title, description, privacy):
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
-    creds = get_youtube_credentials()
+    creds = get_credentials()
     youtube = build("youtube", "v3", credentials=creds)
 
     body = {
         "snippet": {
             "title": title,
             "description": description,
-            "categoryId": "10",  # Music
+            "categoryId": "10",
         },
         "status": {
             "privacyStatus": privacy,
@@ -153,70 +147,77 @@ def upload_to_youtube(mp4_path, title, description, privacy="public"):
         },
     }
 
-    media = MediaFileUpload(mp4_path, mimetype="video/mp4", resumable=True, chunksize=10*1024*1024)
+    media = MediaFileUpload(mp4_path, mimetype="video/mp4", resumable=True, chunksize=10 * 1024 * 1024)
     request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
 
-    print("🚀 Uploading to YouTube...")
+    print("  🚀 Uploading...")
     response = None
     while response is None:
         status, response = request.next_chunk()
         if status:
-            print(f"   {int(status.progress() * 100)}% uploaded")
+            pct = int(status.progress() * 100)
+            print(f"     {pct}%", end="\r")
 
     video_id = response["id"]
     url = f"https://youtube.com/watch?v={video_id}"
-    print(f"✅ Upload complete! {url}")
+    print(f"  ✅ Live at: {url}")
     return url
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="WAV2YouTube — Normalize WAV & upload to YouTube",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  wav2youtube track.wav "My Song" 
-  wav2youtube track.wav "My Song" -d "Description" -p unlisted
-  wav2youtube track.wav "My Song" --keep-mp4
-
-First run: place client_secret.json in ~/.wav2youtube/
-Get it from: https://console.cloud.google.com/apis/credentials
-        """
+        prog="wav2youtube",
+        description="Drop a WAV → get it on YouTube.",
     )
-    parser.add_argument("wav_file", help="Input WAV file path")
-    parser.add_argument("title", help="YouTube video title")
-    parser.add_argument("-d", "--description", default="", help="Video description")
-    parser.add_argument("-p", "--privacy", choices=["public", "unlisted", "private"], default="public")
-    parser.add_argument("--keep-mp4", action="store_true", help="Keep the MP4 file after upload")
-    
+    parser.add_argument("wav", help="WAV file to upload")
+    parser.add_argument("title", nargs="?", help="Video title (asks interactively if omitted)")
+    parser.add_argument("-d", "--desc", default="", help="Description (optional)")
+    parser.add_argument("-p", "--privacy", choices=["public", "unlisted", "private"],
+                        default="unlisted", help="Privacy (default: unlisted)")
+    parser.add_argument("--keep", action="store_true", help="Keep the MP4 file")
+
     args = parser.parse_args()
 
-    # Validate input
-    if not os.path.isfile(args.wav_file):
-        print(f"❌ File not found: {args.wav_file}")
+    if not os.path.isfile(args.wav):
+        print(f"❌ File not found: {args.wav}")
         sys.exit(1)
 
     check_ffmpeg()
 
-    # Work in temp dir
+    # Interactive title if not provided
+    title = args.title
+    if not title:
+        title = input("🎵 Video title: ").strip()
+        if not title:
+            title = Path(args.wav).stem
+
+    print(f"\n╭─────────────────────────────────────╮")
+    print(f"│  WAV2YouTube                        │")
+    print(f"├─────────────────────────────────────┤")
+    print(f"│  File:    {Path(args.wav).name[:25]:<25} │")
+    print(f"│  Title:   {title[:25]:<25} │")
+    print(f"│  Privacy: {args.privacy:<25} │")
+    print(f"╰─────────────────────────────────────╯")
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        basename = Path(args.wav_file).stem
-        normalized_wav = os.path.join(tmpdir, f"{basename}_norm.wav")
-        mp4_file = os.path.join(tmpdir, f"{basename}.mp4")
+        basename = Path(args.wav).stem
+        norm_wav = os.path.join(tmpdir, f"{basename}_norm.wav")
+        mp4 = os.path.join(tmpdir, f"{basename}.mp4")
 
-        # Process
-        normalize_audio(args.wav_file, normalized_wav)
-        create_mp4(normalized_wav, mp4_file)
-        
-        if args.keep_mp4:
-            output_path = str(Path(args.wav_file).parent / f"{basename}.mp4")
+        normalize_audio(args.wav, norm_wav)
+        create_mp4(norm_wav, mp4)
+
+        if args.keep:
+            out = str(Path(args.wav).parent / f"{basename}.mp4")
             import shutil
-            shutil.copy2(mp4_file, output_path)
-            print(f"📁 MP4 saved: {output_path}")
-            upload_to_youtube(output_path, args.title, args.description, args.privacy)
+            shutil.copy2(mp4, out)
+            print(f"  📁 Saved: {out}")
+            upload(out, title, args.desc, args.privacy)
         else:
-            upload_to_youtube(mp4_file, args.title, args.description, args.privacy)
+            upload(mp4, title, args.desc, args.privacy)
 
-    print("🎉 Done!")
+    print("\n  🎉 All done!\n")
+
 
 if __name__ == "__main__":
     main()
