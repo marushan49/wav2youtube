@@ -176,7 +176,29 @@ def main():
                         default="unlisted", help="Privacy (default: unlisted)")
     parser.add_argument("--keep", action="store_true", help="Keep the MP4 file")
 
-    args = parser.parse_args()
+    # If no args (double-click on exe), go interactive
+    if len(sys.argv) == 1:
+        print("╭─────────────────────────────────────╮")
+        print("│  🎵 WAV2YouTube                     │")
+        print("╰─────────────────────────────────────╯")
+        print()
+        wav_path = input("  WAV file (drag & drop or type path): ").strip().strip('"').strip("'")
+        if not wav_path:
+            print("  ❌ No file provided.")
+            return
+        title = input("  Video title: ").strip()
+        if not title:
+            title = Path(wav_path).stem
+        privacy = input("  Privacy [unlisted/public/private] (Enter=unlisted): ").strip().lower()
+        if privacy not in ("public", "unlisted", "private"):
+            privacy = "unlisted"
+        desc = input("  Description (Enter=skip): ").strip()
+
+        args_ns = argparse.Namespace(wav=wav_path, title=title, privacy=privacy, desc=desc, keep=False)
+    else:
+        args_ns = parser.parse_args()
+
+    args = args_ns
 
     if not os.path.isfile(args.wav):
         print(f"❌ File not found: {args.wav}")
@@ -184,12 +206,7 @@ def main():
 
     check_ffmpeg()
 
-    # Interactive title if not provided
-    title = args.title
-    if not title:
-        title = input("🎵 Video title: ").strip()
-        if not title:
-            title = Path(args.wav).stem
+    title = args.title if args.title else Path(args.wav).stem
 
     print(f"\n╭─────────────────────────────────────╮")
     print(f"│  WAV2YouTube                        │")
@@ -220,4 +237,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n  Abgebrochen.")
+    except Exception as e:
+        print(f"\n  ❌ Error: {e}")
+        print(f"     Type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print()
+        input("  Press Enter to close...")
