@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WAV2YouTube — Drop a WAV, get it on YouTube. That's it.
+WAV2YouTube — GUI app. Drop a WAV, set title, click upload.
 """
 
 import sys
@@ -8,8 +8,10 @@ import os
 import subprocess
 import tempfile
 import pickle
-import argparse
+import threading
 from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 
 
 def config_dir():
@@ -21,20 +23,17 @@ def config_dir():
 def check_ffmpeg():
     try:
         subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        return True
     except (FileNotFoundError, subprocess.CalledProcessError):
-        print("❌ ffmpeg not found!")
-        print("   Download: https://ffmpeg.org/download.html")
-        print("   Make sure it's in your PATH.")
-        sys.exit(1)
+        return False
 
 
-def normalize_audio(input_wav, output_wav):
-    """Two-pass EBU R128 normalization to -14 LUFS."""
+def normalize_audio(input_wav, output_wav, progress_cb=None):
     import json
 
-    print("\n  🔊 Normalizing audio...")
+    if progress_cb:
+        progress_cb("Normalizing audio...")
 
-    # Pass 1: Measure
     result = subprocess.run(
         ["ffmpeg", "-hide_banner", "-i", input_wav,
          "-af", "loudnorm=I=-14:LRA=7:TP=-1:print_format=json",
@@ -46,7 +45,6 @@ def normalize_audio(input_wav, output_wav):
     json_end = result.stderr.rfind("}") + 1
 
     if json_start == -1:
-        # Fallback: single-pass
         subprocess.run(
             ["ffmpeg", "-y", "-hide_banner", "-i", input_wav,
              "-af", "loudnorm=I=-14:LRA=7:TP=-1",
@@ -57,7 +55,6 @@ def normalize_audio(input_wav, output_wav):
 
     stats = json.loads(result.stderr[json_start:json_end])
 
-    # Pass 2: Apply
     af = (
         f"loudnorm=I=-14:LRA=7:TP=-1:"
         f"measured_I={stats['input_i']}:"
@@ -72,12 +69,12 @@ def normalize_audio(input_wav, output_wav):
          "-af", af, "-ar", "48000", output_wav],
         check=True, capture_output=True
     )
-    print("  ✅ Done")
 
 
-def create_mp4(audio_path, output_mp4):
-    """Black 1080p video + AAC 320k audio."""
-    print("  🎬 Creating video...")
+def create_mp4(audio_path, output_mp4, progress_cb=None):
+    if progress_cb:
+        progress_cb("Creating video...")
+
     subprocess.run(
         ["ffmpeg", "-y", "-hide_banner",
          "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=1",
@@ -87,7 +84,6 @@ def create_mp4(audio_path, output_mp4):
          "-shortest", output_mp4],
         check=True, capture_output=True
     )
-    print("  ✅ Done")
 
 
 def get_credentials():
@@ -100,15 +96,15 @@ def get_credentials():
     client_secret = config_dir() / "client_secret.json"
 
     if not client_secret.exists():
-        print("\n  ⚙️  One-time setup needed!")
-        print(f"  Place client_secret.json in: {config_dir()}")
-        print()
-        print("  How to get it (takes 2 min):")
-        print("  1. https://console.cloud.google.com → Create project")
-        print("  2. Enable 'YouTube Data API v3'")
-        print("  3. Credentials → OAuth 2.0 → Desktop App")
-        print("  4. Download JSON → rename to client_secret.json")
-        sys.exit(1)
+        raise FileNotFoundError(
+            f"client_secret.json not found!\n\n"
+            f"Place it in:\n{config_dir()}\n\n"
+            f"Get it from:\n"
+            f"1. console.cloud.google.com\n"
+            f"2. Enable YouTube Data API v3\n"
+            f"3. Create OAuth Client (Desktop)\n"
+            f"4. Download JSON → rename to client_secret.json"
+        )
 
     creds = None
     if token_file.exists():
@@ -119,7 +115,6 @@ def get_credentials():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            print("\n  🔑 Opening browser for YouTube login...")
             flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), SCOPES)
             creds = flow.run_local_server(port=8090, prompt="consent")
         with open(token_file, "wb") as f:
@@ -128,9 +123,12 @@ def get_credentials():
     return creds
 
 
-def upload(mp4_path, title, description, privacy):
+def upload_to_youtube(mp4_path, title, description, privacy, progress_cb=None):
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
+
+    if progress_cb:
+        progress_cb("Authenticating...")
 
     creds = get_credentials()
     youtube = build("youtube", "v3", credentials=creds)
@@ -150,102 +148,194 @@ def upload(mp4_path, title, description, privacy):
     media = MediaFileUpload(mp4_path, mimetype="video/mp4", resumable=True, chunksize=10 * 1024 * 1024)
     request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
 
-    print("  🚀 Uploading...")
+    if progress_cb:
+        progress_cb("Uploading to YouTube...")
+
     response = None
     while response is None:
         status, response = request.next_chunk()
-        if status:
-            pct = int(status.progress() * 100)
-            print(f"     {pct}%", end="\r")
+        if status and progress_cb:
+            progress_cb(f"Uploading... {int(status.progress() * 100)}%")
 
-    video_id = response["id"]
-    url = f"https://youtube.com/watch?v={video_id}"
-    print(f"  ✅ Live at: {url}")
-    return url
+    return response["id"]
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        prog="wav2youtube",
-        description="Drop a WAV → get it on YouTube.",
-    )
-    parser.add_argument("wav", help="WAV file to upload")
-    parser.add_argument("title", nargs="?", help="Video title (asks interactively if omitted)")
-    parser.add_argument("-d", "--desc", default="", help="Description (optional)")
-    parser.add_argument("-p", "--privacy", choices=["public", "unlisted", "private"],
-                        default="unlisted", help="Privacy (default: unlisted)")
-    parser.add_argument("--keep", action="store_true", help="Keep the MP4 file")
+class App:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("WAV2YouTube")
+        self.root.geometry("500x420")
+        self.root.resizable(False, False)
+        self.root.configure(bg="#1a1a2e")
 
-    # If no args (double-click on exe), go interactive
-    if len(sys.argv) == 1:
-        print("╭─────────────────────────────────────╮")
-        print("│  🎵 WAV2YouTube                     │")
-        print("╰─────────────────────────────────────╯")
-        print()
-        wav_path = input("  WAV file (drag & drop or type path): ").strip().strip('"').strip("'")
-        if not wav_path:
-            print("  ❌ No file provided.")
+        self.setup_ui()
+
+    def setup_ui(self):
+        bg = "#1a1a2e"
+        fg = "#eaeaea"
+        accent = "#e94560"
+        entry_bg = "#16213e"
+        btn_bg = "#0f3460"
+
+        # Title
+        tk.Label(self.root, text="🎵 WAV2YouTube", font=("Segoe UI", 20, "bold"),
+                 bg=bg, fg=accent).pack(pady=(20, 5))
+        tk.Label(self.root, text="Normalize & Upload to YouTube", font=("Segoe UI", 10),
+                 bg=bg, fg="#888").pack(pady=(0, 20))
+
+        # File selection
+        file_frame = tk.Frame(self.root, bg=bg)
+        file_frame.pack(fill="x", padx=30)
+
+        tk.Label(file_frame, text="WAV File:", font=("Segoe UI", 10),
+                 bg=bg, fg=fg).pack(anchor="w")
+
+        file_row = tk.Frame(file_frame, bg=bg)
+        file_row.pack(fill="x", pady=(2, 10))
+
+        self.file_var = tk.StringVar()
+        self.file_entry = tk.Entry(file_row, textvariable=self.file_var, font=("Segoe UI", 10),
+                                   bg=entry_bg, fg=fg, insertbackground=fg, relief="flat", bd=5)
+        self.file_entry.pack(side="left", fill="x", expand=True)
+
+        tk.Button(file_row, text="Browse", command=self.browse_file,
+                  bg=btn_bg, fg=fg, relief="flat", font=("Segoe UI", 9),
+                  cursor="hand2", padx=10).pack(side="right", padx=(5, 0))
+
+        # Title
+        fields_frame = tk.Frame(self.root, bg=bg)
+        fields_frame.pack(fill="x", padx=30)
+
+        tk.Label(fields_frame, text="Title:", font=("Segoe UI", 10),
+                 bg=bg, fg=fg).pack(anchor="w")
+        self.title_var = tk.StringVar()
+        tk.Entry(fields_frame, textvariable=self.title_var, font=("Segoe UI", 10),
+                 bg=entry_bg, fg=fg, insertbackground=fg, relief="flat", bd=5).pack(fill="x", pady=(2, 10))
+
+        # Description
+        tk.Label(fields_frame, text="Description (optional):", font=("Segoe UI", 10),
+                 bg=bg, fg=fg).pack(anchor="w")
+        self.desc_var = tk.StringVar()
+        tk.Entry(fields_frame, textvariable=self.desc_var, font=("Segoe UI", 10),
+                 bg=entry_bg, fg=fg, insertbackground=fg, relief="flat", bd=5).pack(fill="x", pady=(2, 10))
+
+        # Privacy
+        privacy_frame = tk.Frame(fields_frame, bg=bg)
+        privacy_frame.pack(fill="x", pady=(0, 15))
+        tk.Label(privacy_frame, text="Privacy:", font=("Segoe UI", 10),
+                 bg=bg, fg=fg).pack(side="left")
+
+        self.privacy_var = tk.StringVar(value="unlisted")
+        for val in ["unlisted", "public", "private"]:
+            tk.Radiobutton(privacy_frame, text=val.capitalize(), variable=self.privacy_var,
+                           value=val, bg=bg, fg=fg, selectcolor=entry_bg,
+                           activebackground=bg, activeforeground=fg,
+                           font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
+
+        # Upload button
+        self.upload_btn = tk.Button(self.root, text="🚀 Upload to YouTube",
+                                    command=self.start_upload,
+                                    bg=accent, fg="white", relief="flat",
+                                    font=("Segoe UI", 12, "bold"),
+                                    cursor="hand2", padx=20, pady=8)
+        self.upload_btn.pack(pady=(5, 10))
+
+        # Status
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_label = tk.Label(self.root, textvariable=self.status_var,
+                                     font=("Segoe UI", 9), bg=bg, fg="#888")
+        self.status_label.pack(pady=(0, 5))
+
+        # Progress bar
+        self.progress = ttk.Progressbar(self.root, mode="indeterminate", length=300)
+        self.progress.pack(pady=(0, 10))
+
+    def browse_file(self):
+        path = filedialog.askopenfilename(
+            title="Select WAV file",
+            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
+        )
+        if path:
+            self.file_var.set(path)
+            if not self.title_var.get():
+                self.title_var.set(Path(path).stem)
+
+    def set_status(self, msg):
+        self.status_var.set(msg)
+        self.root.update_idletasks()
+
+    def start_upload(self):
+        wav = self.file_var.get().strip()
+        title = self.title_var.get().strip()
+
+        if not wav:
+            messagebox.showerror("Error", "Please select a WAV file.")
             return
-        title = input("  Video title: ").strip()
+        if not os.path.isfile(wav):
+            messagebox.showerror("Error", f"File not found:\n{wav}")
+            return
         if not title:
-            title = Path(wav_path).stem
-        privacy = input("  Privacy [unlisted/public/private] (Enter=unlisted): ").strip().lower()
-        if privacy not in ("public", "unlisted", "private"):
-            privacy = "unlisted"
-        desc = input("  Description (Enter=skip): ").strip()
+            messagebox.showerror("Error", "Please enter a title.")
+            return
+        if not check_ffmpeg():
+            messagebox.showerror("Error",
+                                 "ffmpeg not found!\n\n"
+                                 "Download from:\nhttps://ffmpeg.org/download.html\n\n"
+                                 "Make sure ffmpeg.exe is in your PATH.")
+            return
 
-        args_ns = argparse.Namespace(wav=wav_path, title=title, privacy=privacy, desc=desc, keep=False)
-    else:
-        args_ns = parser.parse_args()
+        self.upload_btn.configure(state="disabled")
+        self.progress.start(10)
 
-    args = args_ns
+        thread = threading.Thread(target=self.do_upload, daemon=True)
+        thread.start()
 
-    if not os.path.isfile(args.wav):
-        print(f"❌ File not found: {args.wav}")
-        sys.exit(1)
+    def do_upload(self):
+        try:
+            wav = self.file_var.get().strip()
+            title = self.title_var.get().strip()
+            desc = self.desc_var.get().strip()
+            privacy = self.privacy_var.get()
 
-    check_ffmpeg()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                basename = Path(wav).stem
+                norm_wav = os.path.join(tmpdir, f"{basename}_norm.wav")
+                mp4 = os.path.join(tmpdir, f"{basename}.mp4")
 
-    title = args.title if args.title else Path(args.wav).stem
+                normalize_audio(wav, norm_wav, self.set_status)
+                self.set_status("✅ Normalized!")
 
-    print(f"\n╭─────────────────────────────────────╮")
-    print(f"│  WAV2YouTube                        │")
-    print(f"├─────────────────────────────────────┤")
-    print(f"│  File:    {Path(args.wav).name[:25]:<25} │")
-    print(f"│  Title:   {title[:25]:<25} │")
-    print(f"│  Privacy: {args.privacy:<25} │")
-    print(f"╰─────────────────────────────────────╯")
+                create_mp4(norm_wav, mp4, self.set_status)
+                self.set_status("✅ Video created!")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        basename = Path(args.wav).stem
-        norm_wav = os.path.join(tmpdir, f"{basename}_norm.wav")
-        mp4 = os.path.join(tmpdir, f"{basename}.mp4")
+                video_id = upload_to_youtube(mp4, title, desc, privacy, self.set_status)
 
-        normalize_audio(args.wav, norm_wav)
-        create_mp4(norm_wav, mp4)
+            url = f"https://youtube.com/watch?v={video_id}"
+            self.root.after(0, lambda: self.upload_done(url))
 
-        if args.keep:
-            out = str(Path(args.wav).parent / f"{basename}.mp4")
-            import shutil
-            shutil.copy2(mp4, out)
-            print(f"  📁 Saved: {out}")
-            upload(out, title, args.desc, args.privacy)
-        else:
-            upload(mp4, title, args.desc, args.privacy)
+        except Exception as e:
+            self.root.after(0, lambda: self.upload_failed(str(e)))
 
-    print("\n  🎉 All done!\n")
+    def upload_done(self, url):
+        self.progress.stop()
+        self.upload_btn.configure(state="normal")
+        self.set_status(f"✅ Done! {url}")
+        messagebox.showinfo("Success! 🎉",
+                            f"Video uploaded!\n\n{url}\n\n"
+                            f"(Link copied to clipboard)")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(url)
+
+    def upload_failed(self, error):
+        self.progress.stop()
+        self.upload_btn.configure(state="normal")
+        self.set_status("❌ Failed")
+        messagebox.showerror("Upload Failed", error)
+
+    def run(self):
+        self.root.mainloop()
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n  Abgebrochen.")
-    except Exception as e:
-        print(f"\n  ❌ Error: {e}")
-        print(f"     Type: {type(e).__name__}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        print()
-        input("  Press Enter to close...")
+    app = App()
+    app.run()

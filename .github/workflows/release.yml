@@ -19,7 +19,7 @@ jobs:
         run: pip install -r requirements.txt
       
       - name: Build exe
-        run: pyinstaller --onefile --name wav2youtube wav2youtube.py
+        run: pyinstaller --onefile --windowed --name wav2youtube wav2youtube.py
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4

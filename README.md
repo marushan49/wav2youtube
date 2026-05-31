@@ -1,82 +1,61 @@
 # 🎵 WAV2YouTube
 
-**Drop a WAV file → get it on YouTube.** One command. That's it.
+**Drop a WAV → click Upload → it's on YouTube.** Simple GUI, no terminal needed.
 
-```
-wav2youtube song.wav "My Track"
-```
+![wav2youtube](https://img.shields.io/badge/Windows-exe-blue?style=for-the-badge&logo=windows)
 
 ## ⬇️ Download
 
-**[Download wav2youtube.exe](../../releases/latest)** (Windows, no Python needed)
-
-> Also works as Python script on Mac/Linux: `python wav2youtube.py song.wav`
+**[Download wav2youtube.exe](../../releases/latest)** — No Python needed, just run it.
 
 ---
 
-## 🚀 How it works
+## 🖥️ How it looks
 
-1. **Normalizes** your audio to YouTube standard (-14 LUFS)
-2. **Creates** a 1080p MP4 (black screen + high-quality audio)
-3. **Uploads** directly to your YouTube channel
+1. Click **Browse** → pick your WAV
+2. Enter a **title**
+3. Click **🚀 Upload to YouTube**
+4. Done! Link gets copied to clipboard.
+
+> Default privacy: **Unlisted** (only people with the link can see it)
 
 ---
 
-## 📖 Usage
+## What it does
 
-```bash
-# Simple — asks for title interactively
-wav2youtube song.wav
-
-# With title (default: unlisted)
-wav2youtube song.wav "My Song Title"
-
-# Public upload with description
-wav2youtube song.wav "My Song" -p public -d "Check out my new track!"
-
-# Keep the MP4 file locally
-wav2youtube song.wav "My Song" --keep
-```
-
-### Options
-
-- `-p` / `--privacy` → `unlisted` (default), `public`, or `private`
-- `-d` / `--desc` → Video description
-- `--keep` → Save the MP4 file after uploading
+1. **Normalizes** audio to -14 LUFS (YouTube loudness standard)
+2. **Creates** 1080p MP4 (black screen + high-quality AAC audio)
+3. **Uploads** directly to YouTube
 
 ---
 
 ## ⚙️ First-Time Setup (2 minutes)
 
-**You need two things:** ffmpeg + a YouTube API key.
-
 ### 1. Install ffmpeg
 
-- **Windows:** [Download](https://www.gyan.dev/ffmpeg/builds/) → add to PATH
-- **Mac:** `brew install ffmpeg`
-- **Linux:** `sudo apt install ffmpeg`
+- **Windows:** [Download ffmpeg](https://www.gyan.dev/ffmpeg/builds/) → extract → add `bin/` folder to PATH
+- Quick test: open CMD, type `ffmpeg -version`
 
-### 2. Get YouTube API access
+### 2. YouTube API access
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com)
-2. Create a project → search and enable **YouTube Data API v3**
-3. Go to **Credentials** → Create **OAuth 2.0 Client ID** → type: Desktop
-4. Download the JSON file
-5. Rename it to `client_secret.json`
-6. Put it in:
-   - Windows: `C:\Users\YourName\.wav2youtube\client_secret.json`
-   - Mac/Linux: `~/.wav2youtube/client_secret.json`
+2. Create a project → enable **YouTube Data API v3**
+3. Credentials → **OAuth 2.0 Client ID** → Desktop App
+4. Download JSON → rename to `client_secret.json`
+5. Put in: `C:\Users\YourName\.wav2youtube\client_secret.json`
 
-**First run** opens your browser to authorize. After that, it's automatic.
+First upload opens your browser once to authorize. After that it's automatic forever.
 
 ---
 
-## 🛠 Build from source
+## 🛠️ Build from source
 
 ```bash
 pip install -r requirements.txt
-pyinstaller --onefile wav2youtube.py
+pyinstaller --onefile --windowed --name wav2youtube wav2youtube.py
 ```
+
+`--windowed` = no console window behind the GUI.
 
 ---
 
