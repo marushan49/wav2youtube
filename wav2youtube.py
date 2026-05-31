@@ -13,6 +13,12 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+# Fix for --windowed exe: subprocess needs explicit pipe handles
+SUBPROCESS_KWARGS = {}
+if sys.platform == "win32":
+    SUBPROCESS_KWARGS["creationflags"] = subprocess.CREATE_NO_WINDOW
+    SUBPROCESS_KWARGS["stdin"] = subprocess.DEVNULL
+
 
 def config_dir():
     d = Path.home() / ".wav2youtube"
@@ -24,7 +30,8 @@ def get_ffmpeg():
     """Find ffmpeg - PATH first, then same folder as exe."""
     # Check PATH
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True,
+                       **SUBPROCESS_KWARGS)
         return "ffmpeg"
     except (FileNotFoundError, subprocess.CalledProcessError):
         pass
@@ -66,7 +73,7 @@ def normalize_audio(input_wav, output_wav, progress_cb=None, ffmpeg="ffmpeg"):
         [ffmpeg, "-hide_banner", "-i", input_wav,
          "-af", "loudnorm=I=-14:LRA=7:TP=-1:print_format=json",
          "-f", "null", "-"],
-        capture_output=True, text=True
+        capture_output=True, text=True, **SUBPROCESS_KWARGS
     )
 
     json_start = result.stderr.rfind("{")
@@ -77,7 +84,7 @@ def normalize_audio(input_wav, output_wav, progress_cb=None, ffmpeg="ffmpeg"):
             [ffmpeg, "-y", "-hide_banner", "-i", input_wav,
              "-af", "loudnorm=I=-14:LRA=7:TP=-1",
              "-ar", "48000", output_wav],
-            check=True, capture_output=True
+            check=True, capture_output=True, **SUBPROCESS_KWARGS
         )
         return
 
@@ -95,7 +102,7 @@ def normalize_audio(input_wav, output_wav, progress_cb=None, ffmpeg="ffmpeg"):
     subprocess.run(
         [ffmpeg, "-y", "-hide_banner", "-i", input_wav,
          "-af", af, "-ar", "48000", output_wav],
-        check=True, capture_output=True
+        check=True, capture_output=True, **SUBPROCESS_KWARGS
     )
 
 
@@ -110,7 +117,7 @@ def create_mp4(audio_path, output_mp4, progress_cb=None, ffmpeg="ffmpeg"):
          "-c:v", "libx264", "-tune", "stillimage", "-pix_fmt", "yuv420p",
          "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
          "-shortest", output_mp4],
-        check=True, capture_output=True
+        check=True, capture_output=True, **SUBPROCESS_KWARGS
     )
 
 
