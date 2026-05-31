@@ -20,22 +20,50 @@ def config_dir():
     return d
 
 
-def check_ffmpeg():
+def get_ffmpeg():
+    """Find ffmpeg - PATH first, then same folder as exe."""
+    # Check PATH
     try:
         subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
-        return True
+        return "ffmpeg"
     except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
+        pass
+
+    # Check next to exe
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).parent
+    else:
+        exe_dir = Path(__file__).parent
+
+    for name in ["ffmpeg.exe", "ffmpeg"]:
+        local = exe_dir / name
+        if local.exists():
+            return str(local)
+
+    # Check subfolder ffmpeg/bin/
+    for sub in ["ffmpeg/bin", "ffmpeg"]:
+        local = exe_dir / sub / "ffmpeg.exe"
+        if local.exists():
+            return str(local)
+
+    return None
 
 
-def normalize_audio(input_wav, output_wav, progress_cb=None):
+def check_ffmpeg():
+    path = get_ffmpeg()
+    if path:
+        return path
+    return None
+
+
+def normalize_audio(input_wav, output_wav, progress_cb=None, ffmpeg="ffmpeg"):
     import json
 
     if progress_cb:
         progress_cb("Normalizing audio...")
 
     result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", input_wav,
+        [ffmpeg, "-hide_banner", "-i", input_wav,
          "-af", "loudnorm=I=-14:LRA=7:TP=-1:print_format=json",
          "-f", "null", "-"],
         capture_output=True, text=True
@@ -46,7 +74,7 @@ def normalize_audio(input_wav, output_wav, progress_cb=None):
 
     if json_start == -1:
         subprocess.run(
-            ["ffmpeg", "-y", "-hide_banner", "-i", input_wav,
+            [ffmpeg, "-y", "-hide_banner", "-i", input_wav,
              "-af", "loudnorm=I=-14:LRA=7:TP=-1",
              "-ar", "48000", output_wav],
             check=True, capture_output=True
@@ -65,18 +93,18 @@ def normalize_audio(input_wav, output_wav, progress_cb=None):
         f"linear=true"
     )
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-i", input_wav,
+        [ffmpeg, "-y", "-hide_banner", "-i", input_wav,
          "-af", af, "-ar", "48000", output_wav],
         check=True, capture_output=True
     )
 
 
-def create_mp4(audio_path, output_mp4, progress_cb=None):
+def create_mp4(audio_path, output_mp4, progress_cb=None, ffmpeg="ffmpeg"):
     if progress_cb:
         progress_cb("Creating video...")
 
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner",
+        [ffmpeg, "-y", "-hide_banner",
          "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=1",
          "-i", audio_path,
          "-c:v", "libx264", "-tune", "stillimage", "-pix_fmt", "yuv420p",
@@ -277,11 +305,15 @@ class App:
         if not title:
             messagebox.showerror("Error", "Please enter a title.")
             return
-        if not check_ffmpeg():
+
+        self.ffmpeg_path = check_ffmpeg()
+        if not self.ffmpeg_path:
             messagebox.showerror("Error",
                                  "ffmpeg not found!\n\n"
-                                 "Download from:\nhttps://ffmpeg.org/download.html\n\n"
-                                 "Make sure ffmpeg.exe is in your PATH.")
+                                 "Either:\n"
+                                 "• Install ffmpeg and add to PATH\n"
+                                 "• Or put ffmpeg.exe in the same folder as wav2youtube.exe\n\n"
+                                 "Download: https://ffmpeg.org/download.html")
             return
 
         self.upload_btn.configure(state="disabled")
@@ -302,10 +334,10 @@ class App:
                 norm_wav = os.path.join(tmpdir, f"{basename}_norm.wav")
                 mp4 = os.path.join(tmpdir, f"{basename}.mp4")
 
-                normalize_audio(wav, norm_wav, self.set_status)
+                normalize_audio(wav, norm_wav, self.set_status, self.ffmpeg_path)
                 self.set_status("✅ Normalized!")
 
-                create_mp4(norm_wav, mp4, self.set_status)
+                create_mp4(norm_wav, mp4, self.set_status, self.ffmpeg_path)
                 self.set_status("✅ Video created!")
 
                 video_id = upload_to_youtube(mp4, title, desc, privacy, self.set_status)
